@@ -10,10 +10,13 @@
         body { background-color: #f0f2f5; font-family: 'Helvetica Neue', Arial, sans-serif; touch-action: manipulation; }
         .canvas-container { position: relative; height: 28vh; width: 100%; margin-bottom: 0.5rem; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .rms-value { font-size: 1.1rem; font-weight: bold; font-family: monospace;}
-        .status-badge { font-size: 0.9rem; padding: 0.5em 1em; border-radius: 20px; display: inline-block; width: 100%; }
-        .bg-waiting { background-color: #ffc107; color: #000; }
-        .bg-recording { background-color: #dc3545; color: white; animation: pulse 1.5s infinite; }
-        .bg-idle { background-color: #e9ecef; color: #6c757d; }
+        .status-badge { font-size: 0.9rem; padding: 0.5em 1em; border-radius: 20px; display: inline-block; width: 100%; transition: background-color 0.3s; }
+        
+        /* Status Colors */
+        .bg-idle { background-color: #6c757d; color: white; } /* 待機中 (青からグレーに変更: 落ち着かせるため) */
+        .bg-waiting { background-color: #ffc107; color: #000; } /* トリガー待ち */
+        .bg-recording { background-color: #dc3545; color: white; animation: pulse 1.5s infinite; } /* 録音中 */
+        
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
         .control-panel { background: white; padding: 15px; border-radius: 12px; margin-bottom: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
     </style>
@@ -21,10 +24,10 @@
 <body>
 
 <div class="container py-2">
-    <h5 class="text-center fw-bold mb-3">Vibration Lab <span class="badge bg-dark">v3.0</span></h5>
+    <h5 class="text-center fw-bold mb-3">Vibration Lab <span class="badge bg-dark">v3.2</span></h5>
 
     <div class="mb-2 text-center">
-        <span id="status-display" class="status-badge bg-idle">READY</span>
+        <span id="status-display" class="status-badge bg-idle">MONITORING</span>
     </div>
 
     <div class="control-panel">
@@ -71,8 +74,8 @@
                 <button id="btn-trigger-start" class="btn btn-primary w-100 fw-bold py-2">
                     Start (Trigger Mode)
                 </button>
-                <button id="btn-manual-stop" class="btn btn-danger w-100 fw-bold py-2 d-none">
-                    STOP
+                <button id="btn-cancel" class="btn btn-secondary w-100 fw-bold py-2 d-none">
+                    Cancel Trigger
                 </button>
             </div>
         </div>
@@ -85,11 +88,11 @@
     <div class="d-flex justify-content-between align-items-center mb-1 px-2">
         <span class="small text-muted">FFT Analysis</span>
         <div class="btn-group btn-group-sm" role="group">
-            <input type="radio" class="btn-check" name="fftAxis" id="axisX" onchange="setAnalysisAxis('x')">
+            <input type="radio" class="btn-check" name="fftAxis" id="axisX" onchange="currentAxis='x'">
             <label class="btn btn-outline-danger" for="axisX">X</label>
-            <input type="radio" class="btn-check" name="fftAxis" id="axisY" onchange="setAnalysisAxis('y')">
+            <input type="radio" class="btn-check" name="fftAxis" id="axisY" onchange="currentAxis='y'">
             <label class="btn btn-outline-success" for="axisY">Y</label>
-            <input type="radio" class="btn-check" name="fftAxis" id="axisZ" checked onchange="setAnalysisAxis('z')">
+            <input type="radio" class="btn-check" name="fftAxis" id="axisZ" checked onchange="currentAxis='z'">
             <label class="btn btn-outline-primary" for="axisZ">Z</label>
         </div>
     </div>
@@ -102,300 +105,253 @@
 
 <script>
 /**
- * Phase 3: Triggering & Calibration
- * 振動工学実験用オートメーション実装
+ * Logic Fix: Continuous Monitoring + Background Recording
  */
 
-// --- Constants & Config ---
-const BUFFER_SIZE = 512;
-const TARGET_FREQ = 60; // Hz
+// --- Constants ---
+const BUFFER_SIZE = 256; // Reduced for faster FFT response
+const TARGET_FREQ = 60;
 
-// --- State Variables ---
+// --- Variables ---
 let state = 'IDLE'; // IDLE, ARMED, RECORDING
 let offsets = { x: 0, y: 0, z: 0 };
-let sensorData = { x: [], y: [], z: [] };
-let recordedData = []; // Full log
-let timestamps = [];
-let recordingStartTime = 0;
-let triggerThreshold = 2.0;
-let recordDurationSec = 5;
-
-let sensor = null;
-let timeChart, freqChart;
+let displayBuffer = { x: [], y: [], z: [] }; // Always running
+let recordBuffer = []; // Only fills during RECORDING
+let recStartTime = 0;
+let recDurationMs = 5000;
+let triggerThresh = 2.0;
 let currentAxis = 'z';
 
-// --- Signal Processing Utilities ---
-class FastFourierTransform {
-    constructor(size) {
-        this.size = size;
-        this.reverseTable = new Uint32Array(size);
-        let limit = 1, bit = size >> 1;
-        while (limit < size) {
-            for (let i = 0; i < limit; i++) this.reverseTable[i + limit] = this.reverseTable[i] + bit;
-            limit <<= 1; bit >>= 1;
+// --- FFT Implementation ---
+class FFT {
+    constructor(n) {
+        this.n = n;
+        this.rev = new Uint32Array(n);
+        this.sin = new Float32Array(n);
+        this.cos = new Float32Array(n);
+        let lim = 1, bit = n >> 1;
+        while (lim < n) {
+            for (let i = 0; i < lim; i++) this.rev[i + lim] = this.rev[i] + bit;
+            lim <<= 1; bit >>= 1;
         }
-        this.sinTable = new Float32Array(size);
-        this.cosTable = new Float32Array(size);
-        for (let i = 0; i < size; i++) {
-            this.sinTable[i] = Math.sin(-Math.PI / i);
-            this.cosTable[i] = Math.cos(-Math.PI / i);
+        for (let i = 0; i < n; i++) {
+            this.sin[i] = Math.sin(-Math.PI / i);
+            this.cos[i] = Math.cos(-Math.PI / i);
         }
     }
-    calculateSpectrum(realInput) {
-        const n = this.size;
-        const real = new Float32Array(n), imag = new Float32Array(n);
-        for (let i = 0; i < n; i++) { real[i] = realInput[this.reverseTable[i]]; imag[i] = 0; }
-        let halfSize = 1;
-        while (halfSize < n) {
-            const phaseShiftStepReal = this.cosTable[halfSize], phaseShiftStepImag = this.sinTable[halfSize];
-            let currentPhaseShiftReal = 1, currentPhaseShiftImag = 0;
-            for (let fftStep = 0; fftStep < halfSize; fftStep++) {
-                for (let i = fftStep; i < n; i += 2 * halfSize) {
-                    const off = i + halfSize;
-                    const tr = currentPhaseShiftReal * real[off] - currentPhaseShiftImag * imag[off];
-                    const ti = currentPhaseShiftReal * imag[off] + currentPhaseShiftImag * real[off];
+    calc(input) {
+        const n = this.n, real = new Float32Array(n), imag = new Float32Array(n);
+        for (let i = 0; i < n; i++) { real[i] = input[this.rev[i]]; imag[i] = 0; }
+        let h = 1;
+        while (h < n) {
+            const wr = this.cos[h], wi = this.sin[h];
+            let cr = 1, ci = 0;
+            for (let s = 0; s < h; s++) {
+                for (let i = s; i < n; i += 2 * h) {
+                    const off = i + h;
+                    const tr = cr * real[off] - ci * imag[off];
+                    const ti = cr * imag[off] + ci * real[off];
                     real[off] = real[i] - tr; imag[off] = imag[i] - ti;
                     real[i] += tr; imag[i] += ti;
                 }
-                const tmpReal = currentPhaseShiftReal;
-                currentPhaseShiftReal = tmpReal * phaseShiftStepReal - currentPhaseShiftImag * phaseShiftStepImag;
-                currentPhaseShiftImag = tmpReal * phaseShiftStepImag + currentPhaseShiftImag * phaseShiftStepReal;
+                const tr = cr; cr = tr * wr - ci * wi; ci = tr * wi + ci * wr;
             }
-            halfSize <<= 1;
+            h <<= 1;
         }
-        const magnitudes = new Float32Array(n / 2);
-        for (let i = 0; i < n / 2; i++) magnitudes[i] = Math.sqrt(real[i] * real[i] + imag[i] * imag[i]);
-        return magnitudes;
+        const mag = new Float32Array(n/2);
+        for(let i=0; i<n/2; i++) mag[i] = Math.sqrt(real[i]*real[i] + imag[i]*imag[i]);
+        return mag;
     }
 }
-const fftSolver = new FastFourierTransform(BUFFER_SIZE);
+const fft = new FFT(BUFFER_SIZE);
 
-// --- Visualization ---
-function initCharts() {
-    const commonOpts = { 
-        responsive: true, maintainAspectRatio: false, animation: false, 
-        elements: { point: { radius: 0 } }, plugins: { legend: { display: false } } 
-    };
-    
-    timeChart = new Chart(document.getElementById('timeChart'), {
-        type: 'line',
-        data: {
-            labels: Array(BUFFER_SIZE).fill(''),
-            datasets: [
-                { label: 'X', data: [], borderColor: '#dc3545', borderWidth: 1 },
-                { label: 'Y', data: [], borderColor: '#198754', borderWidth: 1 },
-                { label: 'Z', data: [], borderColor: '#0d6efd', borderWidth: 1 }
-            ]
-        },
-        options: { ...commonOpts, scales: { y: { title: { display: true, text: 'm/s²' } } } }
-    });
+// --- Charts Setup ---
+const commonOpts = { 
+    responsive: true, maintainAspectRatio: false, animation: false, 
+    elements: { point: { radius: 0 } }, plugins: { legend: { display: false } },
+    scales: { x: { display: false }, y: { display: true } }
+};
 
-    freqChart = new Chart(document.getElementById('freqChart'), {
-        type: 'bar',
-        data: { labels: [], datasets: [{ data: [], backgroundColor: '#0d6efd' }] },
-        options: { ...commonOpts, scales: { x: { title: {display:true, text:'Hz'} }, y: { display: false } } }
-    });
-}
+const timeChart = new Chart(document.getElementById('timeChart'), {
+    type: 'line',
+    data: { labels: Array(BUFFER_SIZE).fill(''), datasets: [
+        { data: [], borderColor: '#dc3545', borderWidth: 1 },
+        { data: [], borderColor: '#198754', borderWidth: 1 },
+        { data: [], borderColor: '#0d6efd', borderWidth: 1 }
+    ]},
+    options: { ...commonOpts, scales: { y: { min: -10, max: 10 } } }
+});
 
-function setAnalysisAxis(axis) {
-    currentAxis = axis;
-    const colors = { x: '#dc3545', y: '#198754', z: '#0d6efd' };
-    freqChart.data.datasets[0].backgroundColor = colors[axis];
-    freqChart.update();
-}
+const freqChart = new Chart(document.getElementById('freqChart'), {
+    type: 'bar',
+    data: { labels: [], datasets: [{ data: [], backgroundColor: '#0d6efd' }] },
+    options: { ...commonOpts, scales: { x: { display: true }, y: { display: false } } }
+});
 
-// --- Core Logic ---
+// --- Main Processing Loop ---
+let lastChartUpdate = 0;
 
-function calculateRMS(data) {
-    if (data.length === 0) return 0;
-    const sumSq = data.reduce((sum, val) => sum + (val * val), 0);
-    return Math.sqrt(sumSq / data.length);
-}
+function handleSensorData(rawX, rawY, rawZ, t) {
+    // 1. Calibration
+    const x = rawX - offsets.x;
+    const y = rawY - offsets.y;
+    const z = rawZ - offsets.z;
 
-function updateUIAndFFT() {
-    // 表示用バッファ
-    const xBuf = sensorData.x.slice(-BUFFER_SIZE);
-    const yBuf = sensorData.y.slice(-BUFFER_SIZE);
-    const zBuf = sensorData.z.slice(-BUFFER_SIZE);
-
-    // RMS表示
-    document.getElementById('rms-x').innerText = calculateRMS(xBuf).toFixed(2);
-    document.getElementById('rms-y').innerText = calculateRMS(yBuf).toFixed(2);
-    document.getElementById('rms-z').innerText = calculateRMS(zBuf).toFixed(2);
-
-    // グラフ更新（間引き表示も検討すべきだが、今はそのまま）
-    if(state === 'RECORDING') {
-        timeChart.data.datasets[0].data = xBuf;
-        timeChart.data.datasets[1].data = yBuf;
-        timeChart.data.datasets[2].data = zBuf;
-        timeChart.update();
+    // 2. Always update display buffer
+    displayBuffer.x.push(x);
+    displayBuffer.y.push(y);
+    displayBuffer.z.push(z);
+    if (displayBuffer.x.length > BUFFER_SIZE) {
+        displayBuffer.x.shift(); displayBuffer.y.shift(); displayBuffer.z.shift();
     }
 
-    // FFT (分析軸のみ)
-    if (xBuf.length >= BUFFER_SIZE) {
-        let target = (currentAxis === 'x') ? xBuf : (currentAxis === 'y') ? yBuf : zBuf;
-        // 簡易Hanning + FFT
-        const mean = target.reduce((a,b)=>a+b,0)/target.length;
-        const processed = target.map((v,i) => (v-mean) * (0.5 * (1 - Math.cos(2*Math.PI*i/(target.length-1)))));
-        const spec = fftSolver.calculateSpectrum(processed);
+    // 3. RMS Update (Throttled slightly for UI performance)
+    if (Math.random() < 0.1) {
+        document.getElementById('rms-x').innerText = Math.abs(x).toFixed(2); // Simple instant value or short RMS
+        document.getElementById('rms-y').innerText = Math.abs(y).toFixed(2);
+        document.getElementById('rms-z').innerText = Math.abs(z).toFixed(2);
+    }
+
+    // 4. Trigger & Recording Logic
+    if (state === 'ARMED') {
+        if (Math.abs(x) > triggerThresh || Math.abs(y) > triggerThresh || Math.abs(z) > triggerThresh) {
+            state = 'RECORDING';
+            recStartTime = t;
+            recordBuffer = []; // Start fresh log
+            updateStatusUI();
+        }
+    }
+
+    if (state === 'RECORDING') {
+        recordBuffer.push([t, x, y, z]);
+        // Stop condition
+        if ((t - recStartTime) > recDurationMs) {
+            state = 'IDLE';
+            updateStatusUI();
+            document.getElementById('btn-download').disabled = false;
+            alert("Recording Complete. Data ready to save.");
+        }
+    }
+
+    // 5. Chart Update (Limit to ~20 FPS)
+    if (t - lastChartUpdate > 50) {
+        drawCharts();
+        lastChartUpdate = t;
+    }
+}
+
+function drawCharts() {
+    // Update Time Domain
+    timeChart.data.datasets[0].data = displayBuffer.x;
+    timeChart.data.datasets[1].data = displayBuffer.y;
+    timeChart.data.datasets[2].data = displayBuffer.z;
+    timeChart.update();
+
+    // Update Frequency Domain (FFT)
+    const src = displayBuffer[currentAxis];
+    if (src.length >= BUFFER_SIZE) {
+        // Hanning Window
+        const win = src.map((v, i) => v * (0.5 * (1 - Math.cos(2*Math.PI*i/(BUFFER_SIZE-1)))));
+        const spec = fft.calc(win);
         
-        // Freq Axis
-        const fs = TARGET_FREQ; // 簡易的に固定 (厳密にはtimestamp差分)
-        const binW = fs / BUFFER_SIZE;
         const labels = [], data = [];
-        let maxVal = 0, peak = 0;
+        let maxV = 0, peak = 0;
+        const bin = TARGET_FREQ / BUFFER_SIZE;
         
-        for(let i=0; i<spec.length; i++) {
-            let f = i * binW;
+        for (let i = 0; i < spec.length; i++) {
+            const f = i * bin;
+            if (f > 30) break; // Limit to 30Hz
             labels.push(f.toFixed(1));
             data.push(spec[i]);
-            if(i>1 && spec[i]>maxVal) { maxVal=spec[i]; peak=f; }
+            if (i > 2 && spec[i] > maxV) { maxV = spec[i]; peak = f; } // Ignore DC/very low freq
         }
         
         freqChart.data.labels = labels;
         freqChart.data.datasets[0].data = data;
+        freqChart.data.datasets[0].backgroundColor = (currentAxis==='x'?'#dc3545':(currentAxis==='y'?'#198754':'#0d6efd'));
         freqChart.update();
         document.getElementById('peak-freq').innerText = peak.toFixed(1);
     }
 }
 
-function stopRecording() {
-    state = 'IDLE';
-    setStatus("IDLE (Saved)", "bg-idle");
-    
-    document.getElementById('btn-trigger-start').classList.remove('d-none');
-    document.getElementById('btn-manual-stop').classList.add('d-none');
-    document.getElementById('btn-download').disabled = false;
-    
-    // 録音終了時、センサーを停止してもよいが、監視用に動かし続けるのが一般的
-}
+// --- UI Actions ---
+function updateStatusUI() {
+    const badge = document.getElementById('status-display');
+    const btnStart = document.getElementById('btn-trigger-start');
+    const btnCancel = document.getElementById('btn-cancel');
 
-function handleSensorData(rawX, rawY, rawZ, time) {
-    // 1. 校正値の適用 (Calibration)
-    const x = rawX - offsets.x;
-    const y = rawY - offsets.y;
-    const z = rawZ - offsets.z;
-
-    // 2. 状態遷移ロジック
-    if (state === 'ARMED') {
-        // トリガー判定 (いずれかの軸が閾値を超えたら)
-        if (Math.abs(x) > triggerThreshold || Math.abs(y) > triggerThreshold || Math.abs(z) > triggerThreshold) {
-            state = 'RECORDING';
-            setStatus("RECORDING...", "bg-recording");
-            recordedData = []; // クリア
-            sensorData = { x: [], y: [], z: [] }; // クリア
-            recordingStartTime = time;
-        }
-    }
-
-    if (state === 'RECORDING') {
-        // データ保存
-        recordedData.push([time, x, y, z]);
-        
-        // UI用バッファ
-        sensorData.x.push(x);
-        sensorData.y.push(y);
-        sensorData.z.push(z);
-        timestamps.push(time);
-        
-        // バッファ溢れ防止（表示用）
-        if(sensorData.x.length > BUFFER_SIZE) {
-            sensorData.x.shift(); sensorData.y.shift(); sensorData.z.shift(); timestamps.shift();
-        }
-
-        // 時間制限チェック
-        if ((time - recordingStartTime) > (recordDurationSec * 1000)) {
-            stopRecording();
-        }
-        
-        updateUIAndFFT();
-    } else {
-        // IDLE/ARMED中でもRMSだけは見たい場合はここで計算
-        // 今回は負荷軽減のためRECORDING中のみグラフ更新
+    if (state === 'IDLE') {
+        badge.innerText = "MONITORING";
+        badge.className = "status-badge bg-idle";
+        btnStart.classList.remove('d-none');
+        btnCancel.classList.add('d-none');
+    } else if (state === 'ARMED') {
+        badge.innerText = `WAITING (> ${triggerThresh} m/s²)`;
+        badge.className = "status-badge bg-waiting";
+        btnStart.classList.add('d-none');
+        btnCancel.classList.remove('d-none');
+        document.getElementById('btn-download').disabled = true;
+    } else if (state === 'RECORDING') {
+        badge.innerText = "RECORDING...";
+        badge.className = "status-badge bg-recording";
     }
 }
-
-// --- User Actions ---
-
-function setStatus(text, bgClass) {
-    const el = document.getElementById('status-display');
-    el.innerText = text;
-    el.className = `status-badge ${bgClass}`;
-}
-
-document.getElementById('btn-calibrate').addEventListener('click', () => {
-    // 現在の状態をゼロとする (簡易実装：現在値をオフセットに設定)
-    // 本当は数秒間の平均を取るべきだが、クリック時の値で代用
-    if (window.lastRead) {
-        offsets.x = window.lastRead.x;
-        offsets.y = window.lastRead.y;
-        offsets.z = window.lastRead.z;
-        alert("Zero point calibrated!\nX,Y,Z offsets updated.");
-    } else {
-        alert("Sensor not ready yet.");
-    }
-});
 
 document.getElementById('btn-trigger-start').addEventListener('click', () => {
-    triggerThreshold = parseFloat(document.getElementById('trigger-threshold').value);
-    recordDurationSec = parseFloat(document.getElementById('record-duration').value);
-    
+    triggerThresh = parseFloat(document.getElementById('trigger-threshold').value);
+    recDurationMs = parseFloat(document.getElementById('record-duration').value) * 1000;
     state = 'ARMED';
-    setStatus(`WAITING FOR TRIGGER (> ${triggerThreshold} m/s²)`, "bg-waiting");
-    
-    // ボタン切り替え
-    document.getElementById('btn-trigger-start').classList.add('d-none');
-    document.getElementById('btn-manual-stop').classList.remove('d-none');
-    document.getElementById('btn-download').disabled = true;
-    
-    // センサー起動していなければ起動
-    if(!sensor && !window.ondevicemotion) startSensor();
+    updateStatusUI();
+    // Ensure AudioContext/Sensor permission if needed in some browsers (noop here)
 });
 
-document.getElementById('btn-manual-stop').addEventListener('click', stopRecording);
+document.getElementById('btn-cancel').addEventListener('click', () => {
+    state = 'IDLE';
+    updateStatusUI();
+});
+
+document.getElementById('btn-calibrate').addEventListener('click', () => {
+    if(displayBuffer.z.length > 0) {
+        const len = displayBuffer.z.length;
+        offsets.x += displayBuffer.x[len-1];
+        offsets.y += displayBuffer.y[len-1];
+        offsets.z += displayBuffer.z[len-1];
+        alert("Zero Calibrated.");
+    }
+});
 
 document.getElementById('btn-download').addEventListener('click', () => {
-    if (recordedData.length === 0) return;
-    let csv = "Timestamp_ms,Accel_X,Accel_Y,Accel_Z\n";
-    recordedData.forEach(r => csv += r.join(",") + "\n");
+    if (recordBuffer.length === 0) return;
+    let csv = "Time_ms,X,Y,Z\n" + recordBuffer.map(r => r.join(",")).join("\n");
     const link = document.createElement("a");
     link.href = encodeURI("data:text/csv;charset=utf-8," + csv);
     link.download = `vib_data_${Date.now()}.csv`;
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
 });
 
-// --- Sensor Handling ---
+// --- Sensor Initialization ---
 function startSensor() {
-    // センサー値をグローバルに保存して校正に使う
-    const update = (x, y, z) => {
-        window.lastRead = {x, y, z}; // 生データ
-        handleSensorData(x, y, z, performance.now());
-    };
-
     if ('LinearAccelerationSensor' in window) {
         try {
-            sensor = new LinearAccelerationSensor({ frequency: TARGET_FREQ });
-            sensor.addEventListener('reading', () => update(sensor.x, sensor.y, sensor.z));
-            sensor.start();
-        } catch(e){ useFallback(); }
-    } else { useFallback(); }
+            const s = new LinearAccelerationSensor({ frequency: 60 });
+            s.addEventListener('reading', () => handleSensorData(s.x, s.y, s.z, performance.now()));
+            s.start();
+        } catch(e) { fallbackSensor(); }
+    } else { fallbackSensor(); }
 }
 
-function useFallback() {
+function fallbackSensor() {
     window.addEventListener('devicemotion', (e) => {
-        const acc = e.acceleration;
-        const gAcc = e.accelerationIncludingGravity;
-        const x = acc && acc.x != null ? acc.x : (gAcc.x||0);
-        const y = acc && acc.y != null ? acc.y : (gAcc.y||0);
-        const z = acc && acc.z != null ? acc.z : (gAcc.z||0);
-        
-        window.lastRead = {x, y, z};
+        const acc = e.acceleration || e.accelerationIncludingGravity;
+        const x = acc.x || 0;
+        const y = acc.y || 0;
+        const z = acc.z || 0;
         handleSensorData(x, y, z, performance.now());
     });
 }
 
-initCharts();
-setAnalysisAxis('z');
+// Start immediately on load
+startSensor();
 
 </script>
 </body>

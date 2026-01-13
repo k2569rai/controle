@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Vibration Analyzer</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { background-color: #f8f9fa; font-family: 'Helvetica Neue', Arial, sans-serif; }
+        .canvas-container { position: relative; height: 35vh; width: 100%; margin-bottom: 1rem; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        #peak-display { font-size: 2.5rem; font-weight: bold; color: #dc3545; }
+        .status-text { font-size: 0.9rem; color: #6c757d; }
+    </style>
+</head>
+<body>
+
+<div class="container py-3">
+    <h4 class="text-center mb-3">振動解析 & FFT <small class="text-muted">v1.0</small></h4>
+
+    <div class="card mb-3">
+        <div class="card-body text-center">
+            <button id="btn-start" class="btn btn-primary btn-lg w-100 mb-2">Start Measuring</button>
+            <div id="status" class="status-text">待機中 (Startを押してください)</div>
+            <hr>
+            <div class="text-muted small">Dominant Frequency</div>
+            <div id="peak-display">-- Hz</div>
+            <div id="debug-info" class="small text-muted mt-1">Fs: -- Hz</div>
+        </div>
+    </div>
+
+    <div class="canvas-container">
+        <canvas id="timeChart"></canvas>
+    </div>
+    <div class="canvas-container">
+        <canvas id="freqChart"></canvas>
+    </div>
+</div>
+
+<script>
+/**
+ * 振動解析・制御工学用 信号処理モジュール
+ * Future Works: PID Class implementation
+ */
+
+// --- 設定定数 ---
+const BUFFER_SIZE = 512; // 2の累乗 (512 or 1024推奨)
+const TARGET_FREQ = 60;  // Hz
+
+// --- グローバル変数 ---
+let isMeasuring = false;
+let sensorData = [];     // 加速度データ (Z軸)
+let timestamps = [];     // タイムスタンプ (実効Fs計算用)
+let sensor = null;       // Generic Sensor API インスタンス
+let timeChart, freqChart;
+
+// --- 1. FFT実装 (Cooley-Tukey Algorithm) ---
+// 外部ライブラリ依存を減らし、高速化と安定性を確保するための軽量実装
+class FastFourierTransform {
+    constructor(size) {
+        this.size = size;
+        this.reverseTable = new Uint32Array(size);
+        let limit = 1;
+        let bit = size >> 1;
+        while (limit < size) {
+            for (let i = 0; i < limit; i++) {
+                this.reverseTable[i + limit] = this.reverseTable[i] + bit;
+            }
+            limit <<= 1;
+            bit >>= 1;
+        }
+        this.sinTable = new Float32Array(size);
+        this.cosTable = new Float32Array(size);
+        for (let i = 0; i < size; i++) {
+            this.sinTable[i] = Math.sin(-Math.PI / i);
+            this.cosTable[i] = Math.cos(-Math.PI / i);
+        }
+    }
+
+    // 入力: 実数配列, 出力: 振幅スペクトル
+    calculateSpectrum(realInput) {
+        const n = this.size;
+        const real = new Float32Array(n);
+        const imag = new Float32Array(n);
+
+        // ビット反転順序並べ替え
+        for (let i = 0; i < n; i++) {
+            real[i] = realInput[this.reverseTable[i]];
+            imag[i] = 0;
+        }
+
+        let halfSize = 1;
+        while (halfSize < n) {
+            const phaseShiftStepReal = this.cosTable[halfSize];
+            const phaseShiftStepImag = this.sinTable[halfSize];
+            let currentPhaseShiftReal = 1;
+            let currentPhaseShiftImag = 0;
+
+            for (let fftStep = 0; fftStep < halfSize; fftStep++) {
+                for (let i = fftStep; i < n; i += 2 * halfSize) {
+                    const off = i + halfSize;
+                    const tr = currentPhaseShiftReal * real[off] - currentPhaseShiftImag * imag[off];
+                    const ti = currentPhaseShiftReal * imag[off] + currentPhaseShiftImag * real[off];
+                    real[off] = real[i] - tr;
+                    imag[off] = imag[i] - ti;
+                    real[i] += tr;
+                    imag[i] += ti;
+                }
+                const tmpReal = currentPhaseShiftReal;
+                currentPhaseShiftReal = tmpReal * phaseShiftStepReal - currentPhaseShiftImag * phaseShiftStepImag;
+                currentPhaseShiftImag = tmpReal * phaseShiftStepImag + currentPhaseShiftImag * phaseShiftStepReal;
+            }
+            halfSize <<= 1;
+        }
+
+        // 振幅（Magnitude）計算
+        const magnitudes = new Float32Array(n / 2);
+        for (let i = 0; i < n / 2; i++) {
+            magnitudes[i] = Math.sqrt(real[i] * real[i] + imag[i] * imag[i]);
+        }
+        return magnitudes;
+    }
+}
+
+const fftSolver = new FastFourierTransform(BUFFER_SIZE);
+
+// --- 2. チャート初期化 ---
+function initCharts() {
+    const commonOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        elements: { point: { radius: 0 } }, // 高速描画のため点を消す
+        plugins: { legend: { display: false } }
+    };
+
+    // 時間波形
+    const ctxTime = document.getElementById('timeChart').getContext('2d');
+    timeChart = new Chart(ctxTime, {
+        type: 'line',
+        data: {
+            labels: Array(BUFFER_SIZE).fill(''),
+            datasets: [{ label: 'Acceleration Z', data: [], borderColor: '#0d6efd', borderWidth: 1 }]
+        },
+        options: {
+            ...commonOptions,
+            scales: { y: { title: { display: true, text: 'Accel (m/s²)' } } },
+            plugins: { title: { display: true, text: 'Time Domain (時間波形)' } }
+        }
+    });
+
+    // 周波数スペクトル
+    const ctxFreq = document.getElementById('freqChart').getContext('2d');
+    freqChart = new Chart(ctxFreq, {
+        type: 'bar', // バーの方がスペクトルらしく見える
+        data: {
+            labels: [],
+            datasets: [{ label: 'Magnitude', data: [], backgroundColor: '#dc3545' }]
+        },
+        options: {
+            ...commonOptions,
+            scales: { 
+                x: { title: { display: true, text: 'Frequency (Hz)' } },
+                y: { beginAtZero: true }
+            },
+            plugins: { title: { display: true, text: 'Frequency Domain (FFT)' } }
+        }
+    });
+}
+
+// --- 3. 信号処理ロジック (Signal Processing) ---
+
+function applyHanningWindow(data) {
+    // 窓関数適用 (スペクトル漏れ防止)
+    const n = data.length;
+    return data.map((val, i) => val * (0.5 * (1 - Math.cos((2 * Math.PI * i) / (n - 1)))));
+}
+
+function removeDCOffset(data) {
+    // DC成分(平均値)除去
+    const mean = data.reduce((a, b) => a + b, 0) / data.length;
+    return data.map(val => val - mean);
+}
+
+function processBuffer() {
+    if (sensorData.length < BUFFER_SIZE) return;
+
+    const rawData = sensorData.slice(0, BUFFER_SIZE);
+    
+    // 実効サンプリングレートの計算 (タイムスタンプから逆算)
+    const durationSec = (timestamps[timestamps.length - 1] - timestamps[0]) / 1000;
+    const actualFs = (BUFFER_SIZE - 1) / durationSec;
+    
+    // 1. DCオフセット除去
+    const detrended = removeDCOffset(rawData);
+    
+    // 2. 窓関数 (Hanning)
+    const windowed = applyHanningWindow(detrended);
+    
+    // 3. FFT実行
+    const spectrum = fftSolver.calculateSpectrum(windowed);
+    
+    // 4. ピーク検出 & UI更新
+    updateUI(rawData, spectrum, actualFs);
+    
+    // バッファリセット (次の計測へ)
+    resetBuffer();
+}
+
+function updateUI(timeData, spectrum, fs) {
+    // 時間波形更新
+    timeChart.data.datasets[0].data = timeData;
+    timeChart.update();
+
+    // 周波数軸の作成 (0 ~ Nyquist Freq)
+    const freqBinWidth = fs / BUFFER_SIZE;
+    const labels = [];
+    let maxMag = 0;
+    let peakFreq = 0;
+
+    // スペクトル更新 (DC成分であるindex 0は無視する場合が多いが、今回は表示)
+    // ただしピーク検出からはindex 0 (0Hz) を除外して固有振動数を探す
+    for(let i = 0; i < spectrum.length; i++) {
+        const freq = i * freqBinWidth;
+        labels.push(freq.toFixed(1));
+        
+        // ピーク検出 (1Hz以上を対象とする: 低周波ドリフト無視)
+        if (i > 1 && spectrum[i] > maxMag) {
+            maxMag = spectrum[i];
+            peakFreq = freq;
+        }
+    }
+
+    freqChart.data.labels = labels;
+    freqChart.data.datasets[0].data = Array.from(spectrum);
+    freqChart.update();
+
+    document.getElementById('peak-display').innerText = `${peakFreq.toFixed(1)} Hz`;
+    document.getElementById('debug-info').innerText = `Actual Fs: ${fs.toFixed(1)} Hz`;
+    document.getElementById('status').innerText = "解析完了。再計測中...";
+}
+
+// --- 4. センサーハンドリング ---
+
+function resetBuffer() {
+    sensorData = [];
+    timestamps = [];
+    document.getElementById('status').innerText = "計測中... (Buffering)";
+}
+
+function handleSensorData(z, time) {
+    if (!isMeasuring) return;
+
+    sensorData.push(z);
+    timestamps.push(time);
+
+    if (sensorData.length >= BUFFER_SIZE) {
+        processBuffer();
+    }
+}
+
+function startSensor() {
+    // Android (Generic Sensor API)
+    if ('LinearAccelerationSensor' in window) {
+        try {
+            sensor = new LinearAccelerationSensor({ frequency: TARGET_FREQ });
+            sensor.addEventListener('reading', () => {
+                // Z軸方向の加速度を使用
+                handleSensorData(sensor.z, performance.now());
+            });
+            sensor.addEventListener('error', (event) => {
+                console.warn("Sensor API Error:", event.error);
+                useFallbackSensor();
+            });
+            sensor.start();
+            console.log("Using LinearAccelerationSensor");
+            return;
+        } catch (error) {
+            console.log("Sensor API initialization failed, switching to fallback.");
+        }
+    }
+    useFallbackSensor();
+}
+
+function useFallbackSensor() {
+    // Fallback: DeviceMotion Event
+    console.log("Using devicemotion fallback");
+    window.addEventListener('devicemotion', (event) => {
+        // 重力除去済み加速度が存在すれば使用、なければ重力込みを使用（後でDC除去で消えるため）
+        const acc = event.acceleration; 
+        const z = acc && acc.z != null ? acc.z : event.accelerationIncludingGravity.z;
+        handleSensorData(z, performance.now());
+    });
+}
+
+// --- 5. メイン制御 ---
+
+document.getElementById('btn-start').addEventListener('click', () => {
+    if (isMeasuring) {
+        // Stop logic if needed (Currently just toggle flag)
+        isMeasuring = false;
+        document.getElementById('btn-start').innerText = "Start Measuring";
+        document.getElementById('status').innerText = "停止";
+    } else {
+        // Start logic
+        resetBuffer();
+        isMeasuring = true;
+        document.getElementById('btn-start').innerText = "Stop";
+        document.getElementById('btn-start').classList.replace('btn-primary', 'btn-danger');
+        
+        // 初回のみセンサー起動
+        if (!sensor && !window.ondevicemotion) {
+            // iOS等のためのPermission要求はここに入れるが、今回はAndroidターゲットのため省略
+            startSensor(); 
+        }
+    }
+});
+
+// 初期化実行
+initCharts();
+
+</script>
+</body>
+</html>

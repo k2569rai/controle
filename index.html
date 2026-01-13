@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pro Vibration Lab</title>
+    <title>Pro Vibration Lab v3.3</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -13,10 +13,11 @@
         .status-badge { font-size: 0.9rem; padding: 0.5em 1em; border-radius: 20px; display: inline-block; width: 100%; transition: background-color 0.3s; }
         
         /* Status Colors */
-        .bg-idle { background-color: #6c757d; color: white; } /* 待機中 (青からグレーに変更: 落ち着かせるため) */
-        .bg-waiting { background-color: #ffc107; color: #000; } /* トリガー待ち */
-        .bg-recording { background-color: #dc3545; color: white; animation: pulse 1.5s infinite; } /* 録音中 */
-        
+        .bg-idle { background-color: #6c757d; color: white; }
+        .bg-waiting { background-color: #ffc107; color: #000; }
+        .bg-recording { background-color: #dc3545; color: white; animation: pulse 1.5s infinite; }
+        .bg-review { background-color: #0d6efd; color: white; } /* 青色：確認中 */
+
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
         .control-panel { background: white; padding: 15px; border-radius: 12px; margin-bottom: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
     </style>
@@ -24,7 +25,7 @@
 <body>
 
 <div class="container py-2">
-    <h5 class="text-center fw-bold mb-3">Vibration Lab <span class="badge bg-dark">v3.2</span></h5>
+    <h5 class="text-center fw-bold mb-3">Vibration Lab <span class="badge bg-dark">v3.3 (Freeze)</span></h5>
 
     <div class="mb-2 text-center">
         <span id="status-display" class="status-badge bg-idle">MONITORING</span>
@@ -48,7 +49,7 @@
 
         <div class="row g-2 align-items-center mb-3">
             <div class="col-6">
-                <label class="small text-muted">Trigger Threshold</label>
+                <label class="small text-muted">Threshold</label>
                 <div class="input-group input-group-sm">
                     <input type="number" id="trigger-threshold" class="form-control" value="2.0" step="0.5">
                     <span class="input-group-text">m/s²</span>
@@ -68,14 +69,14 @@
                 <button id="btn-calibrate" class="btn btn-outline-dark w-100 btn-sm">Zero Calibrate</button>
             </div>
             <div class="col-6">
-                <button id="btn-download" class="btn btn-outline-secondary w-100 btn-sm" disabled>Save CSV</button>
+                <button id="btn-download" class="btn btn-success w-100 btn-sm" disabled>Save CSV</button>
             </div>
             <div class="col-12 mt-2">
                 <button id="btn-trigger-start" class="btn btn-primary w-100 fw-bold py-2">
                     Start (Trigger Mode)
                 </button>
-                <button id="btn-cancel" class="btn btn-secondary w-100 fw-bold py-2 d-none">
-                    Cancel Trigger
+                <button id="btn-reset" class="btn btn-secondary w-100 fw-bold py-2 d-none">
+                    Cancel
                 </button>
             </div>
         </div>
@@ -86,13 +87,13 @@
     </div>
     
     <div class="d-flex justify-content-between align-items-center mb-1 px-2">
-        <span class="small text-muted">FFT Analysis</span>
+        <span class="small text-muted">FFT Axis</span>
         <div class="btn-group btn-group-sm" role="group">
-            <input type="radio" class="btn-check" name="fftAxis" id="axisX" onchange="currentAxis='x'">
+            <input type="radio" class="btn-check" name="fftAxis" id="axisX" onchange="changeAxis('x')">
             <label class="btn btn-outline-danger" for="axisX">X</label>
-            <input type="radio" class="btn-check" name="fftAxis" id="axisY" onchange="currentAxis='y'">
+            <input type="radio" class="btn-check" name="fftAxis" id="axisY" onchange="changeAxis('y')">
             <label class="btn btn-outline-success" for="axisY">Y</label>
-            <input type="radio" class="btn-check" name="fftAxis" id="axisZ" checked onchange="currentAxis='z'">
+            <input type="radio" class="btn-check" name="fftAxis" id="axisZ" checked onchange="changeAxis('z')">
             <label class="btn btn-outline-primary" for="axisZ">Z</label>
         </div>
     </div>
@@ -105,24 +106,25 @@
 
 <script>
 /**
- * Logic Fix: Continuous Monitoring + Background Recording
+ * v3.3: Freeze Mode Implementation
+ * 録音終了時に描画を停止し、結果を確認可能にする
  */
 
 // --- Constants ---
-const BUFFER_SIZE = 256; // Reduced for faster FFT response
+const BUFFER_SIZE = 256;
 const TARGET_FREQ = 60;
 
-// --- Variables ---
-let state = 'IDLE'; // IDLE, ARMED, RECORDING
+// --- State Variables ---
+let state = 'IDLE'; // 'IDLE', 'ARMED', 'RECORDING', 'REVIEW' (New!)
 let offsets = { x: 0, y: 0, z: 0 };
-let displayBuffer = { x: [], y: [], z: [] }; // Always running
-let recordBuffer = []; // Only fills during RECORDING
+let displayBuffer = { x: [], y: [], z: [] };
+let recordBuffer = [];
 let recStartTime = 0;
 let recDurationMs = 5000;
 let triggerThresh = 2.0;
 let currentAxis = 'z';
 
-// --- FFT Implementation ---
+// --- FFT Logic ---
 class FFT {
     constructor(n) {
         this.n = n;
@@ -165,7 +167,7 @@ class FFT {
 }
 const fft = new FFT(BUFFER_SIZE);
 
-// --- Charts Setup ---
+// --- Charts ---
 const commonOpts = { 
     responsive: true, maintainAspectRatio: false, animation: false, 
     elements: { point: { radius: 0 } }, plugins: { legend: { display: false } },
@@ -192,12 +194,15 @@ const freqChart = new Chart(document.getElementById('freqChart'), {
 let lastChartUpdate = 0;
 
 function handleSensorData(rawX, rawY, rawZ, t) {
+    // 【重要】REVIEWモード中はセンサー入力を無視して画面をフリーズさせる
+    if (state === 'REVIEW') return;
+
     // 1. Calibration
     const x = rawX - offsets.x;
     const y = rawY - offsets.y;
     const z = rawZ - offsets.z;
 
-    // 2. Always update display buffer
+    // 2. Display Buffer (Circular)
     displayBuffer.x.push(x);
     displayBuffer.y.push(y);
     displayBuffer.z.push(z);
@@ -205,35 +210,38 @@ function handleSensorData(rawX, rawY, rawZ, t) {
         displayBuffer.x.shift(); displayBuffer.y.shift(); displayBuffer.z.shift();
     }
 
-    // 3. RMS Update (Throttled slightly for UI performance)
+    // 3. RMS & Logic
     if (Math.random() < 0.1) {
-        document.getElementById('rms-x').innerText = Math.abs(x).toFixed(2); // Simple instant value or short RMS
+        document.getElementById('rms-x').innerText = Math.abs(x).toFixed(2);
         document.getElementById('rms-y').innerText = Math.abs(y).toFixed(2);
         document.getElementById('rms-z').innerText = Math.abs(z).toFixed(2);
     }
 
-    // 4. Trigger & Recording Logic
     if (state === 'ARMED') {
         if (Math.abs(x) > triggerThresh || Math.abs(y) > triggerThresh || Math.abs(z) > triggerThresh) {
             state = 'RECORDING';
             recStartTime = t;
-            recordBuffer = []; // Start fresh log
+            recordBuffer = []; 
             updateStatusUI();
         }
     }
 
     if (state === 'RECORDING') {
         recordBuffer.push([t, x, y, z]);
-        // Stop condition
+        
+        // --- 録音終了時の処理 ---
         if ((t - recStartTime) > recDurationMs) {
-            state = 'IDLE';
+            state = 'REVIEW'; // ここでフリーズモードへ移行
             updateStatusUI();
+            
+            // 念のため最後に一回描画して最新状態にする
+            drawCharts();
             document.getElementById('btn-download').disabled = false;
-            alert("Recording Complete. Data ready to save.");
+            return; 
         }
     }
 
-    // 5. Chart Update (Limit to ~20 FPS)
+    // 4. Draw Charts (Limit FPS)
     if (t - lastChartUpdate > 50) {
         drawCharts();
         lastChartUpdate = t;
@@ -241,16 +249,13 @@ function handleSensorData(rawX, rawY, rawZ, t) {
 }
 
 function drawCharts() {
-    // Update Time Domain
     timeChart.data.datasets[0].data = displayBuffer.x;
     timeChart.data.datasets[1].data = displayBuffer.y;
     timeChart.data.datasets[2].data = displayBuffer.z;
     timeChart.update();
 
-    // Update Frequency Domain (FFT)
     const src = displayBuffer[currentAxis];
     if (src.length >= BUFFER_SIZE) {
-        // Hanning Window
         const win = src.map((v, i) => v * (0.5 * (1 - Math.cos(2*Math.PI*i/(BUFFER_SIZE-1)))));
         const spec = fft.calc(win);
         
@@ -260,10 +265,10 @@ function drawCharts() {
         
         for (let i = 0; i < spec.length; i++) {
             const f = i * bin;
-            if (f > 30) break; // Limit to 30Hz
+            if (f > 30) break; 
             labels.push(f.toFixed(1));
             data.push(spec[i]);
-            if (i > 2 && spec[i] > maxV) { maxV = spec[i]; peak = f; } // Ignore DC/very low freq
+            if (i > 2 && spec[i] > maxV) { maxV = spec[i]; peak = f; }
         }
         
         freqChart.data.labels = labels;
@@ -278,22 +283,42 @@ function drawCharts() {
 function updateStatusUI() {
     const badge = document.getElementById('status-display');
     const btnStart = document.getElementById('btn-trigger-start');
-    const btnCancel = document.getElementById('btn-cancel');
+    const btnReset = document.getElementById('btn-reset');
 
     if (state === 'IDLE') {
-        badge.innerText = "MONITORING";
+        badge.innerText = "MONITORING (Idle)";
         badge.className = "status-badge bg-idle";
         btnStart.classList.remove('d-none');
-        btnCancel.classList.add('d-none');
+        btnStart.innerText = "Start (Trigger Mode)";
+        btnReset.classList.add('d-none');
+        document.getElementById('btn-download').disabled = true;
     } else if (state === 'ARMED') {
         badge.innerText = `WAITING (> ${triggerThresh} m/s²)`;
         badge.className = "status-badge bg-waiting";
         btnStart.classList.add('d-none');
-        btnCancel.classList.remove('d-none');
+        btnReset.classList.remove('d-none');
+        btnReset.innerText = "Cancel";
         document.getElementById('btn-download').disabled = true;
     } else if (state === 'RECORDING') {
         badge.innerText = "RECORDING...";
         badge.className = "status-badge bg-recording";
+        // Buttons hidden during recording
+        btnStart.classList.add('d-none');
+        btnReset.classList.add('d-none');
+    } else if (state === 'REVIEW') {
+        badge.innerText = "FINISHED (FROZEN)";
+        badge.className = "status-badge bg-review";
+        btnStart.classList.add('d-none');
+        btnReset.classList.remove('d-none');
+        btnReset.innerText = "Reset / Monitor"; // ここで再開できることを明示
+    }
+}
+
+function changeAxis(axis) {
+    currentAxis = axis;
+    // REVIEWモード(停止中)でも、軸を切り替えたら再描画して確認できるようにする
+    if (state === 'REVIEW') {
+        drawCharts();
     }
 }
 
@@ -302,10 +327,10 @@ document.getElementById('btn-trigger-start').addEventListener('click', () => {
     recDurationMs = parseFloat(document.getElementById('record-duration').value) * 1000;
     state = 'ARMED';
     updateStatusUI();
-    // Ensure AudioContext/Sensor permission if needed in some browsers (noop here)
 });
 
-document.getElementById('btn-cancel').addEventListener('click', () => {
+document.getElementById('btn-reset').addEventListener('click', () => {
+    // どんな状態からでもモニタリング(IDLE)に戻るボタン
     state = 'IDLE';
     updateStatusUI();
 });
@@ -329,7 +354,7 @@ document.getElementById('btn-download').addEventListener('click', () => {
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
 });
 
-// --- Sensor Initialization ---
+// --- Sensor ---
 function startSensor() {
     if ('LinearAccelerationSensor' in window) {
         try {
@@ -343,14 +368,10 @@ function startSensor() {
 function fallbackSensor() {
     window.addEventListener('devicemotion', (e) => {
         const acc = e.acceleration || e.accelerationIncludingGravity;
-        const x = acc.x || 0;
-        const y = acc.y || 0;
-        const z = acc.z || 0;
-        handleSensorData(x, y, z, performance.now());
+        handleSensorData(acc.x||0, acc.y||0, acc.z||0, performance.now());
     });
 }
 
-// Start immediately on load
 startSensor();
 
 </script>

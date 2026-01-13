@@ -336,12 +336,27 @@ document.getElementById('btn-reset').addEventListener('click', () => {
 });
 
 document.getElementById('btn-calibrate').addEventListener('click', () => {
-    if(displayBuffer.z.length > 0) {
+    // データが十分に溜まっているか確認
+    if(displayBuffer.z.length > 50) { // 50個以上のデータを使う
         const len = displayBuffer.z.length;
-        offsets.x += displayBuffer.x[len-1];
-        offsets.y += displayBuffer.y[len-1];
-        offsets.z += displayBuffer.z[len-1];
-        alert("Zero Calibrated.");
+        
+        // 直近50個のデータの平均値を計算
+        let sumX = 0, sumY = 0, sumZ = 0;
+        const count = 50;
+        for(let i = 0; i < count; i++) {
+            sumX += displayBuffer.x[len - 1 - i];
+            sumY += displayBuffer.y[len - 1 - i];
+            sumZ += displayBuffer.z[len - 1 - i];
+        }
+
+        // 現在のオフセットに「ズレの平均」を足し合わせる
+        offsets.x += (sumX / count);
+        offsets.y += (sumY / count);
+        offsets.z += (sumZ / count);
+
+        alert("平均値でゼロ点調整しました。\n(Precision Calibrated)");
+    } else {
+        alert("データ収集中です...もう少し待ってから押してください");
     }
 });
 

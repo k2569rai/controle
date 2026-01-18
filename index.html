@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pro Vibration Lab v3.3</title>
+    <title>Vib-Lab v4.0 (DSP Filters)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { background-color: #f0f2f5; font-family: 'Helvetica Neue', Arial, sans-serif; touch-action: manipulation; }
-        .canvas-container { position: relative; height: 28vh; width: 100%; margin-bottom: 0.5rem; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .canvas-container { position: relative; height: 26vh; width: 100%; margin-bottom: 0.5rem; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .rms-value { font-size: 1.1rem; font-weight: bold; font-family: monospace;}
         .status-badge { font-size: 0.9rem; padding: 0.5em 1em; border-radius: 20px; display: inline-block; width: 100%; transition: background-color 0.3s; }
         
@@ -16,68 +16,61 @@
         .bg-idle { background-color: #6c757d; color: white; }
         .bg-waiting { background-color: #ffc107; color: #000; }
         .bg-recording { background-color: #dc3545; color: white; animation: pulse 1.5s infinite; }
-        .bg-review { background-color: #0d6efd; color: white; } /* 青色：確認中 */
+        .bg-review { background-color: #0d6efd; color: white; }
 
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
-        .control-panel { background: white; padding: 15px; border-radius: 12px; margin-bottom: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        .control-panel { background: white; padding: 12px; border-radius: 12px; margin-bottom: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        .filter-btn-group .btn-check:checked + .btn-outline-dark { background-color: #343a40; color: white; }
     </style>
 </head>
 <body>
 
 <div class="container py-2">
-    <h5 class="text-center fw-bold mb-3">Vibration Lab <span class="badge bg-dark">v3.3 (Freeze)</span></h5>
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <h6 class="fw-bold m-0">Vib-Lab <span class="badge bg-dark">v4.0 DSP</span></h6>
+        <span id="status-display" class="status-badge bg-idle" style="width: auto;">MONITOR</span>
+    </div>
 
-    <div class="mb-2 text-center">
-        <span id="status-display" class="status-badge bg-idle">MONITORING</span>
+    <div class="card mb-2 p-1">
+        <div class="row g-0 align-items-center">
+            <div class="col-3 text-center small fw-bold text-muted">FILTER</div>
+            <div class="col-9">
+                <div class="btn-group w-100 filter-btn-group" role="group">
+                    <input type="radio" class="btn-check" name="filterMode" id="filterRaw" checked onchange="setFilter('RAW')">
+                    <label class="btn btn-outline-dark btn-sm" for="filterRaw">RAW</label>
+
+                    <input type="radio" class="btn-check" name="filterMode" id="filterLPF" onchange="setFilter('LPF')">
+                    <label class="btn btn-outline-dark btn-sm" for="filterLPF">LPF</label>
+
+                    <input type="radio" class="btn-check" name="filterMode" id="filterHPF" onchange="setFilter('HPF')">
+                    <label class="btn btn-outline-dark btn-sm" for="filterHPF">HPF</label>
+                </div>
+            </div>
+        </div>
     </div>
 
     <div class="control-panel">
-        <div class="row text-center mb-3">
-            <div class="col-4 border-end">
-                <small class="text-muted d-block">X (RMS)</small>
-                <span id="rms-x" class="rms-value text-danger">0.00</span>
-            </div>
-            <div class="col-4 border-end">
-                <small class="text-muted d-block">Y (RMS)</small>
-                <span id="rms-y" class="rms-value text-success">0.00</span>
-            </div>
-            <div class="col-4">
-                <small class="text-muted d-block">Z (RMS)</small>
-                <span id="rms-z" class="rms-value text-primary">0.00</span>
-            </div>
-        </div>
-
-        <div class="row g-2 align-items-center mb-3">
-            <div class="col-6">
-                <label class="small text-muted">Threshold</label>
-                <div class="input-group input-group-sm">
-                    <input type="number" id="trigger-threshold" class="form-control" value="2.0" step="0.5">
-                    <span class="input-group-text">m/s²</span>
-                </div>
-            </div>
-            <div class="col-6">
-                <label class="small text-muted">Duration</label>
-                <div class="input-group input-group-sm">
-                    <input type="number" id="record-duration" class="form-control" value="5" step="1">
-                    <span class="input-group-text">sec</span>
-                </div>
-            </div>
+        <div class="row text-center mb-2">
+            <div class="col-4 border-end"><small class="text-muted">X</small><br><span id="rms-x" class="rms-value text-danger">0.00</span></div>
+            <div class="col-4 border-end"><small class="text-muted">Y</small><br><span id="rms-y" class="rms-value text-success">0.00</span></div>
+            <div class="col-4"><small class="text-muted">Z</small><br><span id="rms-z" class="rms-value text-primary">0.00</span></div>
         </div>
 
         <div class="row g-2">
-            <div class="col-6">
-                <button id="btn-calibrate" class="btn btn-outline-dark w-100 btn-sm">Zero Calibrate</button>
+            <div class="col-4">
+                <input type="number" id="trigger-threshold" class="form-control form-control-sm" value="1.0" step="0.5" placeholder="Thresh">
+            </div>
+            <div class="col-8">
+                <button id="btn-trigger-start" class="btn btn-primary w-100 btn-sm fw-bold">Start Trigger</button>
+                <button id="btn-reset" class="btn btn-secondary w-100 btn-sm fw-bold d-none">Reset / Monitor</button>
+            </div>
+        </div>
+        <div class="row g-2 mt-1">
+             <div class="col-6">
+                <button id="btn-calibrate" class="btn btn-outline-secondary w-100 btn-sm">Zero Cal.</button>
             </div>
             <div class="col-6">
                 <button id="btn-download" class="btn btn-success w-100 btn-sm" disabled>Save CSV</button>
-            </div>
-            <div class="col-12 mt-2">
-                <button id="btn-trigger-start" class="btn btn-primary w-100 fw-bold py-2">
-                    Start (Trigger Mode)
-                </button>
-                <button id="btn-reset" class="btn btn-secondary w-100 fw-bold py-2 d-none">
-                    Cancel
-                </button>
             </div>
         </div>
     </div>
@@ -87,42 +80,79 @@
     </div>
     
     <div class="d-flex justify-content-between align-items-center mb-1 px-2">
-        <span class="small text-muted">FFT Axis</span>
         <div class="btn-group btn-group-sm" role="group">
             <input type="radio" class="btn-check" name="fftAxis" id="axisX" onchange="changeAxis('x')">
-            <label class="btn btn-outline-danger" for="axisX">X</label>
+            <label class="btn btn-outline-danger py-0" for="axisX">X</label>
             <input type="radio" class="btn-check" name="fftAxis" id="axisY" onchange="changeAxis('y')">
-            <label class="btn btn-outline-success" for="axisY">Y</label>
+            <label class="btn btn-outline-success py-0" for="axisY">Y</label>
             <input type="radio" class="btn-check" name="fftAxis" id="axisZ" checked onchange="changeAxis('z')">
-            <label class="btn btn-outline-primary" for="axisZ">Z</label>
+            <label class="btn btn-outline-primary py-0" for="axisZ">Z</label>
         </div>
+        <span class="small text-muted">Peak: <span id="peak-freq" class="fw-bold text-dark">--</span> Hz</span>
     </div>
     
     <div class="canvas-container">
         <canvas id="freqChart"></canvas>
     </div>
-    <div class="text-center small text-muted mt-1">Peak: <span id="peak-freq" class="fw-bold">--</span> Hz</div>
 </div>
 
 <script>
 /**
- * v3.3: Freeze Mode Implementation
- * 録音終了時に描画を停止し、結果を確認可能にする
+ * v4.0: DSP Filters (LPF/HPF) Implementation
+ * Real-time signal processing for cleaner vibration analysis
  */
 
 // --- Constants ---
 const BUFFER_SIZE = 256;
 const TARGET_FREQ = 60;
+const DT = 1.0 / TARGET_FREQ;
 
-// --- State Variables ---
-let state = 'IDLE'; // 'IDLE', 'ARMED', 'RECORDING', 'REVIEW' (New!)
-let offsets = { x: 0, y: 0, z: 0 };
-let displayBuffer = { x: [], y: [], z: [] };
-let recordBuffer = [];
-let recStartTime = 0;
-let recDurationMs = 5000;
-let triggerThresh = 2.0;
-let currentAxis = 'z';
+// --- Filter Class (Digital Signal Processing) ---
+class SignalFilter {
+    constructor() {
+        this.mode = 'RAW'; // RAW, LPF, HPF
+        this.reset();
+        
+        // Filter Coefficients
+        // LPF: fc=10Hz (Smooth out noise)
+        const rc_lpf = 1.0 / (2 * Math.PI * 10);
+        this.alpha_lpf = DT / (rc_lpf + DT);
+
+        // HPF: fc=1.0Hz (Remove Gravity/Drift)
+        const rc_hpf = 1.0 / (2 * Math.PI * 1.0);
+        this.alpha_hpf = rc_hpf / (rc_hpf + DT);
+    }
+
+    reset() {
+        this.prev = { x: 0, y: 0, z: 0 };    // For LPF
+        this.prevIn = { x: 0, y: 0, z: 0 };  // For HPF
+        this.prevOut = { x: 0, y: 0, z: 0 }; // For HPF
+    }
+
+    process(x, y, z) {
+        if (this.mode === 'RAW') return { x, y, z };
+
+        let out = { x: 0, y: 0, z: 0 };
+
+        if (this.mode === 'LPF') {
+            // Low Pass: y[i] = alpha*x[i] + (1-alpha)*y[i-1]
+            out.x = this.alpha_lpf * x + (1 - this.alpha_lpf) * this.prev.x;
+            out.y = this.alpha_lpf * y + (1 - this.alpha_lpf) * this.prev.y;
+            out.z = this.alpha_lpf * z + (1 - this.alpha_lpf) * this.prev.z;
+            this.prev = out;
+        } 
+        else if (this.mode === 'HPF') {
+            // High Pass: y[i] = alpha * (y[i-1] + x[i] - x[i-1])
+            out.x = this.alpha_hpf * (this.prevOut.x + x - this.prevIn.x);
+            out.y = this.alpha_hpf * (this.prevOut.y + y - this.prevIn.y);
+            out.z = this.alpha_hpf * (this.prevOut.z + z - this.prevIn.z);
+            this.prevIn = { x, y, z };
+            this.prevOut = out;
+        }
+        return out;
+    }
+}
+const signalFilter = new SignalFilter();
 
 // --- FFT Logic ---
 class FFT {
@@ -167,13 +197,23 @@ class FFT {
 }
 const fft = new FFT(BUFFER_SIZE);
 
-// --- Charts ---
+// --- State Variables ---
+let state = 'IDLE'; // IDLE, ARMED, RECORDING, REVIEW
+let offsets = { x: 0, y: 0, z: 0 };
+let displayBuffer = { x: [], y: [], z: [] };
+let recordBuffer = [];
+let recStartTime = 0;
+let recDurationMs = 5000;
+let triggerThresh = 1.0;
+let currentAxis = 'z';
+let lastChartUpdate = 0;
+
+// --- Chart Setup ---
 const commonOpts = { 
     responsive: true, maintainAspectRatio: false, animation: false, 
     elements: { point: { radius: 0 } }, plugins: { legend: { display: false } },
     scales: { x: { display: false }, y: { display: true } }
 };
-
 const timeChart = new Chart(document.getElementById('timeChart'), {
     type: 'line',
     data: { labels: Array(BUFFER_SIZE).fill(''), datasets: [
@@ -181,42 +221,41 @@ const timeChart = new Chart(document.getElementById('timeChart'), {
         { data: [], borderColor: '#198754', borderWidth: 1 },
         { data: [], borderColor: '#0d6efd', borderWidth: 1 }
     ]},
-    options: { ...commonOpts, scales: { y: { min: -10, max: 10 } } }
+    options: { ...commonOpts, scales: { y: { min: -5, max: 5 } } } // Scaled for cleaner view
 });
-
 const freqChart = new Chart(document.getElementById('freqChart'), {
     type: 'bar',
     data: { labels: [], datasets: [{ data: [], backgroundColor: '#0d6efd' }] },
     options: { ...commonOpts, scales: { x: { display: true }, y: { display: false } } }
 });
 
-// --- Main Processing Loop ---
-let lastChartUpdate = 0;
-
+// --- Main Processing ---
 function handleSensorData(rawX, rawY, rawZ, t) {
-    // 【重要】REVIEWモード中はセンサー入力を無視して画面をフリーズさせる
     if (state === 'REVIEW') return;
 
-    // 1. Calibration
-    const x = rawX - offsets.x;
-    const y = rawY - offsets.y;
-    const z = rawZ - offsets.z;
+    // 1. Calibration (Apply Offset)
+    let x = rawX - offsets.x;
+    let y = rawY - offsets.y;
+    let z = rawZ - offsets.z;
 
-    // 2. Display Buffer (Circular)
-    displayBuffer.x.push(x);
-    displayBuffer.y.push(y);
-    displayBuffer.z.push(z);
+    // 2. Apply Digital Filter (LPF/HPF)
+    const filtered = signalFilter.process(x, y, z);
+    x = filtered.x; y = filtered.y; z = filtered.z;
+
+    // 3. Buffer Update
+    displayBuffer.x.push(x); displayBuffer.y.push(y); displayBuffer.z.push(z);
     if (displayBuffer.x.length > BUFFER_SIZE) {
         displayBuffer.x.shift(); displayBuffer.y.shift(); displayBuffer.z.shift();
     }
 
-    // 3. RMS & Logic
+    // 4. RMS & UI
     if (Math.random() < 0.1) {
         document.getElementById('rms-x').innerText = Math.abs(x).toFixed(2);
         document.getElementById('rms-y').innerText = Math.abs(y).toFixed(2);
         document.getElementById('rms-z').innerText = Math.abs(z).toFixed(2);
     }
 
+    // 5. Trigger Logic
     if (state === 'ARMED') {
         if (Math.abs(x) > triggerThresh || Math.abs(y) > triggerThresh || Math.abs(z) > triggerThresh) {
             state = 'RECORDING';
@@ -225,23 +264,18 @@ function handleSensorData(rawX, rawY, rawZ, t) {
             updateStatusUI();
         }
     }
-
     if (state === 'RECORDING') {
         recordBuffer.push([t, x, y, z]);
-        
-        // --- 録音終了時の処理 ---
         if ((t - recStartTime) > recDurationMs) {
-            state = 'REVIEW'; // ここでフリーズモードへ移行
+            state = 'REVIEW';
             updateStatusUI();
-            
-            // 念のため最後に一回描画して最新状態にする
-            drawCharts();
+            drawCharts(); // Final draw
             document.getElementById('btn-download').disabled = false;
-            return; 
+            return;
         }
     }
 
-    // 4. Draw Charts (Limit FPS)
+    // 6. Draw
     if (t - lastChartUpdate > 50) {
         drawCharts();
         lastChartUpdate = t;
@@ -256,21 +290,21 @@ function drawCharts() {
 
     const src = displayBuffer[currentAxis];
     if (src.length >= BUFFER_SIZE) {
+        // Hanning & FFT
         const win = src.map((v, i) => v * (0.5 * (1 - Math.cos(2*Math.PI*i/(BUFFER_SIZE-1)))));
         const spec = fft.calc(win);
         
         const labels = [], data = [];
         let maxV = 0, peak = 0;
         const bin = TARGET_FREQ / BUFFER_SIZE;
-        
         for (let i = 0; i < spec.length; i++) {
             const f = i * bin;
-            if (f > 30) break; 
+            if (f > 30) break;
             labels.push(f.toFixed(1));
             data.push(spec[i]);
-            if (i > 2 && spec[i] > maxV) { maxV = spec[i]; peak = f; }
+            // Ignore low freq noise in peak detection
+            if (f > 1.0 && spec[i] > maxV) { maxV = spec[i]; peak = f; }
         }
-        
         freqChart.data.labels = labels;
         freqChart.data.datasets[0].data = data;
         freqChart.data.datasets[0].backgroundColor = (currentAxis==='x'?'#dc3545':(currentAxis==='y'?'#198754':'#0d6efd'));
@@ -279,97 +313,72 @@ function drawCharts() {
     }
 }
 
-// --- UI Actions ---
+// --- UI Logic ---
+function setFilter(mode) {
+    signalFilter.mode = mode;
+    signalFilter.reset(); // Clear filter history to avoid jump
+}
+
 function updateStatusUI() {
     const badge = document.getElementById('status-display');
     const btnStart = document.getElementById('btn-trigger-start');
     const btnReset = document.getElementById('btn-reset');
 
     if (state === 'IDLE') {
-        badge.innerText = "MONITORING (Idle)";
-        badge.className = "status-badge bg-idle";
-        btnStart.classList.remove('d-none');
-        btnStart.innerText = "Start (Trigger Mode)";
-        btnReset.classList.add('d-none');
+        badge.innerText = "MONITOR"; badge.className = "status-badge bg-idle";
+        btnStart.classList.remove('d-none'); btnReset.classList.add('d-none');
         document.getElementById('btn-download').disabled = true;
     } else if (state === 'ARMED') {
-        badge.innerText = `WAITING (> ${triggerThresh} m/s²)`;
-        badge.className = "status-badge bg-waiting";
-        btnStart.classList.add('d-none');
-        btnReset.classList.remove('d-none');
-        btnReset.innerText = "Cancel";
-        document.getElementById('btn-download').disabled = true;
+        badge.innerText = `WAITING >${triggerThresh}`; badge.className = "status-badge bg-waiting";
+        btnStart.classList.add('d-none'); btnReset.classList.remove('d-none');
     } else if (state === 'RECORDING') {
-        badge.innerText = "RECORDING...";
-        badge.className = "status-badge bg-recording";
-        // Buttons hidden during recording
-        btnStart.classList.add('d-none');
-        btnReset.classList.add('d-none');
+        badge.innerText = "RECORDING"; badge.className = "status-badge bg-recording";
     } else if (state === 'REVIEW') {
-        badge.innerText = "FINISHED (FROZEN)";
-        badge.className = "status-badge bg-review";
-        btnStart.classList.add('d-none');
-        btnReset.classList.remove('d-none');
-        btnReset.innerText = "Reset / Monitor"; // ここで再開できることを明示
+        badge.innerText = "FROZEN (Review)"; badge.className = "status-badge bg-review";
+        btnStart.classList.add('d-none'); btnReset.classList.remove('d-none');
     }
 }
 
 function changeAxis(axis) {
     currentAxis = axis;
-    // REVIEWモード(停止中)でも、軸を切り替えたら再描画して確認できるようにする
-    if (state === 'REVIEW') {
-        drawCharts();
-    }
+    if (state === 'REVIEW') drawCharts();
 }
 
 document.getElementById('btn-trigger-start').addEventListener('click', () => {
     triggerThresh = parseFloat(document.getElementById('trigger-threshold').value);
-    recDurationMs = parseFloat(document.getElementById('record-duration').value) * 1000;
     state = 'ARMED';
     updateStatusUI();
 });
 
 document.getElementById('btn-reset').addEventListener('click', () => {
-    // どんな状態からでもモニタリング(IDLE)に戻るボタン
     state = 'IDLE';
     updateStatusUI();
 });
 
 document.getElementById('btn-calibrate').addEventListener('click', () => {
-    // データが十分に溜まっているか確認
-    if(displayBuffer.z.length > 50) { // 50個以上のデータを使う
+    // Averaging Calibration
+    if(displayBuffer.z.length > 50) {
+        let sx=0, sy=0, sz=0, n=50;
         const len = displayBuffer.z.length;
-        
-        // 直近50個のデータの平均値を計算
-        let sumX = 0, sumY = 0, sumZ = 0;
-        const count = 50;
-        for(let i = 0; i < count; i++) {
-            sumX += displayBuffer.x[len - 1 - i];
-            sumY += displayBuffer.y[len - 1 - i];
-            sumZ += displayBuffer.z[len - 1 - i];
+        for(let i=0; i<n; i++) {
+            sx += displayBuffer.x[len-1-i]; sy += displayBuffer.y[len-1-i]; sz += displayBuffer.z[len-1-i];
         }
-
-        // 現在のオフセットに「ズレの平均」を足し合わせる
-        offsets.x += (sumX / count);
-        offsets.y += (sumY / count);
-        offsets.z += (sumZ / count);
-
-        alert("平均値でゼロ点調整しました。\n(Precision Calibrated)");
-    } else {
-        alert("データ収集中です...もう少し待ってから押してください");
+        // If HPF is on, offsets should be reset or ignored, but adding them is fine too
+        offsets.x += sx/n; offsets.y += sy/n; offsets.z += sz/n;
+        alert("Zero Calibrated (Average)");
     }
 });
 
 document.getElementById('btn-download').addEventListener('click', () => {
     if (recordBuffer.length === 0) return;
-    let csv = "Time_ms,X,Y,Z\n" + recordBuffer.map(r => r.join(",")).join("\n");
+    let csv = "Time,X,Y,Z\n" + recordBuffer.map(r => r.join(",")).join("\n");
     const link = document.createElement("a");
     link.href = encodeURI("data:text/csv;charset=utf-8," + csv);
-    link.download = `vib_data_${Date.now()}.csv`;
+    link.download = `vib_${signalFilter.mode}_${Date.now()}.csv`;
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
 });
 
-// --- Sensor ---
+// --- Sensor Init ---
 function startSensor() {
     if ('LinearAccelerationSensor' in window) {
         try {
@@ -379,16 +388,13 @@ function startSensor() {
         } catch(e) { fallbackSensor(); }
     } else { fallbackSensor(); }
 }
-
 function fallbackSensor() {
-    window.addEventListener('devicemotion', (e) => {
+    window.addEventListener('devicemotion', e => {
         const acc = e.acceleration || e.accelerationIncludingGravity;
         handleSensorData(acc.x||0, acc.y||0, acc.z||0, performance.now());
     });
 }
-
 startSensor();
-
 </script>
 </body>
 </html>
